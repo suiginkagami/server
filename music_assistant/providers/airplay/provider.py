@@ -6,15 +6,16 @@ import asyncio
 import base64
 import json
 import socket
+import time
 from contextlib import suppress
 from ipaddress import ip_address
-from typing import cast
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import PlaybackState
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.util import (
     get_ip_pton,
@@ -22,11 +23,18 @@ from music_assistant.helpers.util import (
     select_free_port,
 )
 from music_assistant.models.player_provider import PlayerProvider
+from music_assistant.providers.music_play_tap.output_tap import OutputTapStreamSession
 
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_VOLUME_MUTE,
     CONF_IGNORE_VOLUME,
+    CONF_RENDER_SYNC_MQTT_ENABLED,
+    CONF_RENDER_SYNC_MQTT_HOST,
+    CONF_RENDER_SYNC_MQTT_PASSWORD,
+    CONF_RENDER_SYNC_MQTT_PORT,
+    CONF_RENDER_SYNC_MQTT_TOPIC,
+    CONF_RENDER_SYNC_MQTT_USERNAME,
     CONF_STORED_VOLUME,
     DACP_DISCOVERY_TYPE,
     FALLBACK_VOLUME,
@@ -34,7 +42,11 @@ from .constants import (
 )
 from .helpers import convert_airplay_volume, get_model_info
 from .player import AirPlayPlayer
+from .render_sync import RenderSyncMqttPublisher
 from .sendspin_bridge import SendspinBridgeManager
+
+if TYPE_CHECKING:
+    from .protocols._protocol import AirPlayProtocol
 
 # TODO: AirPlay provider
 # Implement Companion protocol for communicating with original Apple (TV) devices
@@ -48,6 +60,7 @@ class AirPlayProvider(PlayerProvider):
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager
+    _render_sync_publisher: RenderSyncMqttPublisher
 
     @property
     def bridge_manager(self) -> SendspinBridgeManager:
@@ -58,6 +71,22 @@ class AirPlayProvider(PlayerProvider):
         """Handle async initialization of the provider."""
         # Initialize Sendspin bridge manager for protocol linking
         self._bridge_manager = SendspinBridgeManager(self)
+        self._render_sync_publisher = RenderSyncMqttPublisher(
+            logger=self.logger.getChild("render_sync"),
+            enabled=bool(self.config.get_value(CONF_RENDER_SYNC_MQTT_ENABLED, False)),
+            host=str(
+                self.config.get_value(CONF_RENDER_SYNC_MQTT_HOST, "127.0.0.1")
+                or "127.0.0.1"
+            ),
+            port=int(self.config.get_value(CONF_RENDER_SYNC_MQTT_PORT, 1883) or 1883),
+            topic=str(
+                self.config.get_value(CONF_RENDER_SYNC_MQTT_TOPIC, "music-assistant/render-sync")
+                or "music-assistant/render-sync"
+            ),
+            username=_empty_to_none(self.config.get_value(CONF_RENDER_SYNC_MQTT_USERNAME)),
+            password=_empty_to_none(self.config.get_value(CONF_RENDER_SYNC_MQTT_PASSWORD)),
+        )
+        self._render_sync_publisher.start()
 
         # register DACP zeroconf service
         dacp_port = await select_free_port(39831, 49831)
@@ -122,6 +151,9 @@ class AirPlayProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        render_sync_publisher = getattr(self, "_render_sync_publisher", None)
+        if render_sync_publisher:
+            await render_sync_publisher.stop()
         # Stop all Sendspin bridges
         bridge_manager = getattr(self, "_bridge_manager", None)
         if bridge_manager:
@@ -230,6 +262,62 @@ class AirPlayProvider(PlayerProvider):
 
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
         await self._bridge_manager.setup_bridge(player)
+
+    def publish_render_sync_anchor(
+        self,
+        protocol: AirPlayProtocol,
+        *,
+        source: str,
+        state: PlaybackState | None,
+        elapsed_time: float,
+        anchor_ts: float,
+    ) -> None:
+        """
+        Publish a render-sync anchor for output_tap-backed AirPlay playback.
+
+        :param protocol: The AirPlay protocol instance emitting the anchor.
+        :param source: Anchor source string such as ``raop.elapsed``.
+        :param state: Playback state associated with the anchor.
+        :param elapsed_time: Rendered elapsed seconds on the AirPlay target.
+        :param anchor_ts: Unix wall-clock timestamp belonging to ``elapsed_time``.
+        """
+        if not getattr(self, "_render_sync_publisher", None) or (
+            not self._render_sync_publisher.enabled
+        ):
+            return
+        active_queue = self.mass.players.get_active_queue(protocol.player)
+        if (
+            not active_queue
+            or not active_queue.current_item
+            or not active_queue.current_item.streamdetails
+        ):
+            return
+        streamdetails = active_queue.current_item.streamdetails
+        tap_session = streamdetails.data
+        if not isinstance(tap_session, OutputTapStreamSession):
+            return
+        resolved = tap_session.resolve_output_frame(elapsed_time)
+        if resolved is None:
+            return
+        sync_adjust_ms = int(protocol.player.config.get_value(CONF_SYNC_ADJUST, 0) or 0)
+        payload: dict[str, Any] = {
+            "version": 1,
+            "event": "render_anchor",
+            "source": source,
+            "player_id": protocol.player.player_id,
+            "protocol": protocol.player.protocol.name.lower(),
+            "state": (state or protocol.player.state.playback_state).value,
+            "anchor_monotonic_ns": time.monotonic_ns(),
+            "anchor_unix_ns": int(anchor_ts * 1_000_000_000),
+            "render_elapsed_s": elapsed_time,
+            "output_stream_epoch": resolved.output_stream_epoch,
+            "render_output_frame": resolved.output_frame,
+            "sample_rate": resolved.sample_rate,
+            "start_ntp": getattr(protocol.session, "start_ntp", None),
+            "wait_start_ms": round(getattr(protocol.session, "wait_start", 0.0) * 1000),
+            "sync_adjust_ms": sync_adjust_ms,
+        }
+        self._render_sync_publisher.publish(payload)
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -438,3 +526,11 @@ class AirPlayProvider(PlayerProvider):
     def get_player(self, player_id: str) -> AirPlayPlayer | None:
         """Return AirplayPlayer by id."""
         return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))
+
+
+def _empty_to_none(value: object) -> str | None:
+    """Normalize blank config values to ``None``."""
+    if value is None:
+        return None
+    value_str = str(value).strip()
+    return value_str or None

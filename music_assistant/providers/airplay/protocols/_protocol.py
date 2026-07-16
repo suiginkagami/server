@@ -166,6 +166,13 @@ class AirPlayProtocol(ABC):
             elapsed_time_last_updated=anchor_ts,
             stream=self,
         )
+        self.prov.publish_render_sync_anchor(
+            self,
+            source=source,
+            state=state,
+            elapsed_time=elapsed_time,
+            anchor_ts=anchor_ts,
+        )
         return elapsed_time
 
     async def wait_for_connection(self) -> None:

@@ -34,6 +34,7 @@ def _make_protocol_player(protocol: StreamingProtocol) -> MagicMock:
     provider = MagicMock()
     provider.mass = MagicMock()
     provider.logger = logging.getLogger(f"tests.airplay.{protocol.value}")
+    provider.publish_render_sync_anchor = MagicMock()
 
     player = MagicMock()
     player.provider = provider
@@ -83,6 +84,12 @@ async def test_raop_reader_emits_session_aligned_timeline_anchor() -> None:
     assert call_args[1].kwargs["elapsed_time"] == pytest.approx(5.5)
     assert call_args[1].kwargs["elapsed_time_last_updated"] == pytest.approx(100.5)
     assert call_args[1].kwargs["stream"] is stream
+    assert player.provider.publish_render_sync_anchor.call_count == 2
+    assert player.provider.publish_render_sync_anchor.call_args_list[0].kwargs["source"] == "raop.start"
+    assert (
+        player.provider.publish_render_sync_anchor.call_args_list[1].kwargs["source"]
+        == "raop.elapsed"
+    )
 
 
 @pytest.mark.asyncio
@@ -115,3 +122,5 @@ async def test_airplay2_reader_emits_session_aligned_start_anchor() -> None:
     assert call_args[0].kwargs["elapsed_time"] == pytest.approx(5.0)
     assert call_args[0].kwargs["elapsed_time_last_updated"] == pytest.approx(100.0)
     assert call_args[0].kwargs["stream"] is stream
+    assert player.provider.publish_render_sync_anchor.call_count == 1
+    assert player.provider.publish_render_sync_anchor.call_args.kwargs["source"] == "airplay2.start"

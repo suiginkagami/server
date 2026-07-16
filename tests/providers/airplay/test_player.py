@@ -1,11 +1,12 @@
 """Unit tests for AirPlay player."""
 
 import time
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.enums import PlaybackState, PlayerFeature
 
 from music_assistant.providers.airplay.constants import (
     CONF_IGNORE_VOLUME,
@@ -235,6 +236,81 @@ def test_set_state_from_stream_uses_explicit_anchor_timestamp(
     assert airplay_player._attr_playback_state == PlaybackState.PLAYING
     assert airplay_player._attr_elapsed_time == 12.5
     assert airplay_player._attr_elapsed_time_last_updated == anchor_ts
+    mock_update.assert_called_once()
+
+
+def test_supported_features_include_set_members(airplay_player: AirPlayPlayer) -> None:
+    """AirPlay players should expose grouping support."""
+    assert PlayerFeature.SET_MEMBERS in airplay_player.supported_features
+
+
+@pytest.mark.asyncio
+async def test_set_members_adds_late_joiner_to_live_session(airplay_player: AirPlayPlayer) -> None:
+    """Adding a member during playback should reuse the active stream session."""
+    member = AirPlayPlayer(
+        provider=cast("Any", airplay_player.provider),
+        player_id="member_player",
+        display_name="Member Player",
+        address="127.0.0.2",
+        manufacturer="Test Manufacturer",
+        model="Test Model",
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+    stream_session = MagicMock()
+    stream_session.sync_clients = [airplay_player]
+    stream_session.start_ntp = 123
+    stream_session.start_time = time.time() - 12.5
+    stream_session.add_client = AsyncMock()
+    stream = MagicMock()
+    stream.running = True
+    stream.session = stream_session
+    airplay_player.stream = stream
+    airplay_player.mass.players.get_player.side_effect = (  # type: ignore[attr-defined]
+        lambda player_id: member if player_id == member.player_id else None
+    )
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        await airplay_player.set_members(player_ids_to_add=[member.player_id])
+
+    assert airplay_player._attr_group_members == [airplay_player.player_id, member.player_id]
+    stream_session.add_client.assert_awaited_once_with(member)
+    mock_update.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_set_members_skips_live_add_for_existing_session_member(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """set_members should not re-add a player already present in the live session."""
+    member = AirPlayPlayer(
+        provider=cast("Any", airplay_player.provider),
+        player_id="member_player",
+        display_name="Member Player",
+        address="127.0.0.2",
+        manufacturer="Test Manufacturer",
+        model="Test Model",
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+    stream_session = MagicMock()
+    stream_session.sync_clients = [airplay_player, member]
+    stream_session.start_ntp = 123
+    stream_session.start_time = time.time() - 12.5
+    stream_session.add_client = AsyncMock()
+    stream = MagicMock()
+    stream.running = True
+    stream.session = stream_session
+    airplay_player.stream = stream
+    airplay_player.mass.players.get_player.side_effect = (  # type: ignore[attr-defined]
+        lambda player_id: member if player_id == member.player_id else None
+    )
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        await airplay_player.set_members(player_ids_to_add=[member.player_id])
+
+    assert airplay_player._attr_group_members == [airplay_player.player_id, member.player_id]
+    stream_session.add_client.assert_not_awaited()
     mock_update.assert_called_once()
 
 

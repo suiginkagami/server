@@ -1,0 +1,11 @@
+{
+  "type": "plugin",
+  "domain": "music_play_tap",
+  "stage": "alpha",
+  "name": "music-play Output Tap",
+  "description": "Consume the music-play output_tap PCM stream as a Music Assistant live input.",
+  "codeowners": ["@music-assistant"],
+  "documentation": "https://github.com/music-assistant/server",
+  "multi_instance": true,
+  "requirements": []
+}

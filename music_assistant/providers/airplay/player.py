@@ -887,7 +887,21 @@ class AirPlayPlayer(Player):
                     # Skip add_client if the player is already streaming in this session
                     # (e.g. after a dynamic leader switch where the stream continues)
                     if child_player_to_add not in stream_session.sync_clients:
+                        self.logger.debug(
+                            "Adding AirPlay member %s to live session on %s "
+                            "(session_start_ntp=%s, session_elapsed=%.3fs)",
+                            child_player_to_add.player_id,
+                            self.player_id,
+                            stream_session.start_ntp,
+                            time.time() - stream_session.start_time,
+                        )
                         await stream_session.add_client(child_player_to_add)
+                    else:
+                        self.logger.debug(
+                            "Skipping live-session add for %s on %s: already part of session",
+                            child_player_to_add.player_id,
+                            self.player_id,
+                        )
 
             # Ensure group leader includes itself in group_members when it has members
             # This is required for the synced_to property to work correctly
