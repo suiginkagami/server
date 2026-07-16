@@ -130,7 +130,7 @@ class MusicPlayTapProvider(PluginProvider):
             can_next_previous=False,
             exclusive=True,
             allow_external_trigger=False,
-            can_initiate=False,
+            can_initiate=True,
         )
         self._in_use_by_queue: str | None = None
         self._active_session_id: str | None = None

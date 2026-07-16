@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import struct
+from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.providers.music_play_tap import MusicPlayTapProvider
 from music_assistant.providers.music_play_tap.output_tap import (
     OutputTapPacket,
     OutputTapStreamSession,
@@ -42,6 +44,28 @@ def _packet_bytes(metadata: dict[str, object], pcm: bytes) -> bytes:
     return _PACKET_PREFIX.pack(b"OTAP", len(metadata_bytes), len(pcm)) + metadata_bytes + pcm
 
 
+def _make_provider() -> MusicPlayTapProvider:
+    """Create a minimal provider instance for unit tests."""
+    mass = MagicMock()
+    mass.cache = MagicMock()
+
+    config_values = {
+        "log_level": "GLOBAL",
+        "tap_host": "127.0.0.1",
+        "tap_port": 8766,
+        "source_name": "music-play Output Tap",
+    }
+    config = MagicMock()
+    config.get_value.side_effect = config_values.get
+    config.instance_id = "music_play_tap_test"
+    config.name = "music-play Output Tap"
+
+    manifest = MagicMock()
+    manifest.domain = "music_play_tap"
+
+    return MusicPlayTapProvider(mass, manifest, config)
+
+
 @pytest.mark.asyncio
 async def test_read_output_tap_packet() -> None:
     """Reader should parse one complete output_tap packet."""
@@ -69,6 +93,18 @@ async def test_read_output_tap_packet() -> None:
     assert packet.output_stream_epoch == "epoch-a"
     assert packet.frame_count == 4
     assert packet.pcm == pcm
+
+
+@pytest.mark.asyncio
+async def test_provider_exposes_initiable_audio_source() -> None:
+    """The output_tap source should be browsable/playable from the MA UI."""
+    provider = _make_provider()
+
+    sources = await provider.get_audio_sources()
+
+    assert len(sources) == 1
+    assert sources[0].can_initiate is True
+    assert sources[0].allow_external_trigger is False
 
 
 def test_output_tap_session_tracks_epoch_boundaries() -> None:
