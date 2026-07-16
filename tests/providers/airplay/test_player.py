@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.airplay.constants import (
     CONF_IGNORE_VOLUME,
@@ -213,6 +214,28 @@ async def test_volume_mute_no_stream(airplay_player: AirPlayPlayer) -> None:
 
         assert airplay_player._attr_volume_muted is True
         mock_update.assert_called_once()
+
+
+def test_set_state_from_stream_uses_explicit_anchor_timestamp(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """Elapsed-time updates should preserve the timestamp supplied by the stream."""
+    stream = MagicMock()
+    airplay_player.stream = stream
+    anchor_ts = 1_726_000_123.456
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.set_state_from_stream(
+            state=PlaybackState.PLAYING,
+            elapsed_time=12.5,
+            elapsed_time_last_updated=anchor_ts,
+            stream=stream,
+        )
+
+    assert airplay_player._attr_playback_state == PlaybackState.PLAYING
+    assert airplay_player._attr_elapsed_time == 12.5
+    assert airplay_player._attr_elapsed_time_last_updated == anchor_ts
+    mock_update.assert_called_once()
 
 
 def test_sync_volume_level_keeps_stored_volume_for_native_parent(

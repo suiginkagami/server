@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.images import player_image_url
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.providers.airplay.constants import AIRPLAY_PCM_FORMAT
@@ -82,6 +83,90 @@ class AirPlayProtocol(ABC):
 
         :param start_ntp: NTP timestamp to start streaming.
         """
+
+    def _session_elapsed_now(self, anchor_ts: float | None = None) -> float | None:
+        """
+        Return the session-based elapsed time for a wall-clock timestamp.
+
+        :param anchor_ts: Unix timestamp to evaluate. Defaults to ``time.time()``.
+        """
+        if self.session is None:
+            return None
+        if anchor_ts is None:
+            anchor_ts = time.time()
+        return max(0.0, anchor_ts - self.session.start_time)
+
+    def _current_elapsed_anchor(self, anchor_ts: float | None = None) -> float:
+        """
+        Return the best-known current elapsed time for this stream.
+
+        :param anchor_ts: Unix timestamp used for session fallback calculations.
+        """
+        if (elapsed_time := self.player.corrected_elapsed_time) is not None:
+            return elapsed_time
+        if (session_elapsed := self._session_elapsed_now(anchor_ts)) is not None:
+            return session_elapsed
+        return 0.0
+
+    def _update_timeline_anchor(
+        self,
+        source: str,
+        *,
+        state: PlaybackState | None = None,
+        elapsed_time: float | None = None,
+        anchor_ts: float | None = None,
+    ) -> float:
+        """
+        Update the player's elapsed-time anchor from a CLI event.
+
+        :param source: Short identifier for the CLI event that produced the anchor.
+        :param state: Optional playback state to apply together with the anchor.
+        :param elapsed_time: Optional elapsed time. Falls back to the best-known stream time.
+        :param anchor_ts: Wall-clock timestamp that belongs to the anchor.
+        :returns: The elapsed time that was forwarded to the player state.
+        """
+        if anchor_ts is None:
+            anchor_ts = time.time()
+        if elapsed_time is None:
+            elapsed_time = self._current_elapsed_anchor(anchor_ts)
+        session_elapsed = self._session_elapsed_now(anchor_ts)
+        if session_elapsed is None:
+            self.logger.debug(
+                "AirPlay timeline anchor: player=%s protocol=%s source=%s elapsed=%.3f updated_at=%.6f",
+                self.player.player_id,
+                self.__class__.__name__,
+                source,
+                elapsed_time,
+                anchor_ts,
+            )
+        else:
+            drift = elapsed_time - session_elapsed
+            log_level = VERBOSE_LOG_LEVEL if source == "raop.elapsed" else None
+            log_msg = (
+                "AirPlay timeline anchor: player=%s protocol=%s source=%s elapsed=%.3f "
+                "session_elapsed=%.3f drift=%.3f updated_at=%.6f start_ntp=%s"
+            )
+            log_args = (
+                self.player.player_id,
+                self.__class__.__name__,
+                source,
+                elapsed_time,
+                session_elapsed,
+                drift,
+                anchor_ts,
+                getattr(self.session, "start_ntp", None),
+            )
+            if log_level is None:
+                self.logger.debug(log_msg, *log_args)
+            else:
+                self.logger.log(log_level, log_msg, *log_args)
+        self.player.set_state_from_stream(
+            state=state,
+            elapsed_time=elapsed_time,
+            elapsed_time_last_updated=anchor_ts,
+            stream=self,
+        )
+        return elapsed_time
 
     async def wait_for_connection(self) -> None:
         """Wait for device connection to be established."""

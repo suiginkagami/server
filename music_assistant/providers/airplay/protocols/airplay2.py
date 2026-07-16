@@ -244,18 +244,22 @@ class AirPlay2Stream(AirPlayProtocol):
                 self._connected.set()
                 self._session_established()
             elif "Pause at" in line:
-                player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
+                self._update_timeline_anchor("airplay2.pause", state=PlaybackState.PAUSED)
             elif "Restarted at" in line:
-                player.set_state_from_stream(state=PlaybackState.PLAYING, stream=self)
+                self._update_timeline_anchor("airplay2.resume", state=PlaybackState.PLAYING)
             elif "Starting at" in line:
                 # streaming has started - compute a fixed offset between the
                 # session start_time and this process start to handle dynamic
                 # leader switching where a new process starts mid-session.
+                anchor_ts = time.time()
                 if self._elapsed_time_offset is None and self.session:
-                    self._elapsed_time_offset = max(0, time.time() - self.session.start_time)
-                elapsed_time = self._elapsed_time_offset or 0
-                player.set_state_from_stream(
-                    state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
+                    self._elapsed_time_offset = max(0, anchor_ts - self.session.start_time)
+                elapsed_time = self._elapsed_time_offset
+                self._update_timeline_anchor(
+                    "airplay2.start",
+                    state=PlaybackState.PLAYING,
+                    elapsed_time=elapsed_time,
+                    anchor_ts=anchor_ts,
                 )
             elif "put delay detected" in line:
                 if "resetting all outputs" in line:

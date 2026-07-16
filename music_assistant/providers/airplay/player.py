@@ -966,12 +966,15 @@ class AirPlayPlayer(Player):
         self,
         state: PlaybackState | None = None,
         elapsed_time: float | None = None,
+        elapsed_time_last_updated: float | None = None,
         stream: AirPlayProtocol | None = None,
     ) -> None:
-        """Set the playback state from stream (RAOP or AirPlay2).
+        """
+        Set the playback state from stream (RAOP or AirPlay2).
 
         :param state: New playback state (or None to keep current).
         :param elapsed_time: New elapsed time (or None to keep current).
+        :param elapsed_time_last_updated: Wall-clock timestamp that belongs to ``elapsed_time``.
         :param stream: The stream instance sending this update (for validation).
         """
         # Ignore state updates from old/stale streams
@@ -981,7 +984,9 @@ class AirPlayPlayer(Player):
             self._attr_playback_state = state
         if elapsed_time is not None:
             self._attr_elapsed_time = elapsed_time
-            self._attr_elapsed_time_last_updated = time.time()
+            self._attr_elapsed_time_last_updated = (
+                elapsed_time_last_updated if elapsed_time_last_updated is not None else time.time()
+            )
         self.update_state()
 
     def sync_volume_level(self) -> None:

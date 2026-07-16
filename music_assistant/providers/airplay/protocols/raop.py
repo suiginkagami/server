@@ -119,16 +119,21 @@ class RaopStream(AirPlayProtocol):
                 self._connected.set()
                 # successfully connected - playback will/can start
             if "set pause" in line or "Pause at" in line:
-                player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
+                self._update_timeline_anchor("raop.pause", state=PlaybackState.PAUSED)
             elif "Restarted at" in line or "restarting w/ pause" in line:
-                player.set_state_from_stream(state=PlaybackState.PLAYING, stream=self)
+                self._update_timeline_anchor("raop.resume", state=PlaybackState.PLAYING)
             elif "restarting w/o pause" in line:
                 # streaming has started
-                player.set_state_from_stream(
-                    state=PlaybackState.PLAYING, elapsed_time=0, stream=self
+                anchor_ts = time.time()
+                self._update_timeline_anchor(
+                    "raop.start",
+                    state=PlaybackState.PLAYING,
+                    elapsed_time=self._session_elapsed_now(anchor_ts),
+                    anchor_ts=anchor_ts,
                 )
             elif "elapsed milliseconds:" in line:
                 # this is received more or less every second while playing
+                anchor_ts = time.time()
                 millis = int(line.split("elapsed milliseconds: ")[1])
                 elapsed_time = millis / 1000
                 # on the first elapsed time report, compute a fixed offset between
@@ -137,11 +142,15 @@ class RaopStream(AirPlayProtocol):
                 # reports from 0 while the flow stream started much earlier.
                 if self._elapsed_time_offset is None and self.session:
                     self._elapsed_time_offset = max(
-                        0, time.time() - self.session.start_time - elapsed_time
+                        0, anchor_ts - self.session.start_time - elapsed_time
                     )
                 if self._elapsed_time_offset:
                     elapsed_time += self._elapsed_time_offset
-                player.set_state_from_stream(elapsed_time=elapsed_time, stream=self)
+                self._update_timeline_anchor(
+                    "raop.elapsed",
+                    elapsed_time=elapsed_time,
+                    anchor_ts=anchor_ts,
+                )
             elif "Password required, but none supplied." in line:
                 logger.error(
                     f"Player {self.player.name} requires a password. "
